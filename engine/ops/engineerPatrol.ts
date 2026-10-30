@@ -118,6 +118,19 @@ export interface PatrolFacts {
   telegramBotReady: boolean; emailProviderReady: boolean;
   audienceKnown: Record<string, boolean>;
   performanceRecords: number;
+  // ترقية المهندس 2026-10-29 (اختيارية: غيابها = «غير متاح» لا عطل)
+  /** الحارس الأمني: مستوى الخطر، الحظر القائم، أحداث 24 ساعة بنوعها. */
+  security?: { level: 'calm' | 'probing' | 'attack'; activeBlocks: number; last24h: Record<string, number>; forgedWebhooks1h: number; lastHourScore: number } | null;
+  /** آخر جولة كناري للحرّاس. */
+  guards?: { total: number; failed: number; failedLabels: string[]; ageMin: number | null } | null;
+  /** آخر فحص خارجي للحافة. */
+  edge?: { worst: string; details: string[]; remedy: string | null; ageMin: number | null } | null;
+  /** كل حصة مجانية مع تنبؤ نهاية الشهر. */
+  plans?: { status: 'ok' | 'warn' | 'fail' | 'skip'; details: string[]; worstDetail: string } | null;
+  /** حجم القاعدة الحقيقي مقابل سقف الخطة. */
+  storageSize?: { status: 'ok' | 'warn' | 'fail' | 'skip'; detail: string; advice: string | null } | null;
+  /** ثغرات مكتبات الإنتاج التي بُنيت بها النسخة الحية (لقطة زمن البناء). */
+  deps?: { ok: boolean; at: string; critical: number; high: number; moderate: number; top: string[]; error: string | null } | null;
   // capacity (حجم كل مجموعة + معدّل نموها اليومي المقيس)
   collections: Array<{ key: string; size: number; growthPerDay: number | null }>;
 }
@@ -156,6 +169,29 @@ export const PATROL_CHECKS: Readonly<Record<EngineerModule, Check[]>> = Object.f
     c('auth.secret', 'سرّ توقيع الجلسات', 'سرّ مؤقت يعني خروج الجميع عند كل إعادة تشغيل.', (f) => f.sessionSecretSource === 'ephemeral' ? { status: 'fail', detail: 'سرّ مؤقت', advice: 'اضبط SESSION_SECRET في Render' } : { status: 'ok', detail: `من ${f.sessionSecretSource}` }),
     c('auth.login', 'بريد رمز الدخول', 'دخول المالك برمز يُرسل بالبريد؛ بلا بريد لا دخول.', (f) => f.loginEmailReady ? { status: 'ok', detail: 'مزوّد البريد مضبوط' } : { status: 'fail', detail: 'مزوّد البريد غير مضبوط', advice: 'اضبط مزوّد البريد قبل انتهاء جلستك' }),
     c('auth.revoked', 'سجل الجلسات الملغاة', 'السجل محدود بـ500؛ تجاوزه يُسقط الأقدم فتعود جلسات ملغاة صالحة.', (f) => f.revokedSessions >= 450 ? { status: 'warn', detail: `${f.revokedSessions} من 500`, advice: 'استخدم «إبطال كل الجلسات» بدل الإبطال الفردي' } : { status: 'ok', detail: `${f.revokedSessions} من 500` }),
+    c('auth.intrusion', 'محاولات الاختراق وفحص الثغرات', 'الحارس يرى كل محاولة (/.env، wp-admin، اجتياز، حقن، سحب المصدر) ويحظر مصدرها المباشر تلقائياً.', (f) => {
+      const s = f.security;
+      if (!s) return { status: 'skip', detail: 'الحارس الأمني لم يبدأ' };
+      const n = ['scanner', 'traversal', 'injection', 'source_probe'].reduce((a, k) => a + Number(s.last24h[k] || 0), 0);
+      const tail = `${n} محاولة خلال 24 س${s.activeBlocks ? ` · ${s.activeBlocks} مصدراً محظوراً الآن` : ''}`;
+      if (s.level === 'attack') return { status: 'warn', detail: `هجوم نشط يُصدّ — ${tail}`, advice: 'لا إجراء مطلوب منك: الطلبات رُفضت والمصدر حُظر مؤقتاً. التفاصيل في «الحارس الأمني» بغرفة المهندس' };
+      return { status: 'ok', detail: s.level === 'probing' ? `استطلاع مرصود ومرفوض — ${tail}` : n ? `هادئ الآن — ${tail}` : 'لا محاولة اختراق' };
+    }),
+    c('auth.dependencies', 'ثغرات المكتبات في النسخة الحية', 'مكتبة فيها ثغرة معروفة = باب مفتوح ولو كان كودنا سليماً.', (f) => {
+      const d = f.deps;
+      if (!d) return { status: 'skip', detail: 'لا لقطة ثغرات لهذه النسخة (تُنشأ عند بناء Docker)' };
+      if (!d.ok) return { status: 'skip', detail: `تعذّر فحص المكتبات عند البناء: ${String(d.error || '').slice(0, 80)}` };
+      const tail = d.top.length ? ` — ${d.top.join('، ')}` : '';
+      if (d.critical) return { status: 'fail', detail: `${d.critical} ثغرة حرجة و${d.high} عالية${tail}`, advice: 'مهندس الكود يحدّث المكتبة (طلب Dependabot الأسبوعي أو npm audit fix) ثم نشر جديد — CI يمنع دمج ثغرة حرجة' };
+      if (d.high) return { status: 'warn', detail: `${d.high} ثغرة عالية${tail}`, advice: 'تُعالج في طلب Dependabot القادم؛ مراقبة الثغرات الأسبوعية تفتح تذكرة بها' };
+      return { status: 'ok', detail: `لا ثغرة حرجة ولا عالية${d.moderate ? ` (${d.moderate} متوسطة)` : ''} — فحص البناء ${d.at.slice(0, 10)}` };
+    }),
+    c('auth.bruteforce', 'تخمين الدخول', 'تخمين رمز التحقق أو بلوغ حدّ المحاولات يعني أن أحداً يحاول الدخول كمالك.', (f) => {
+      const s = f.security;
+      if (!s) return { status: 'skip', detail: 'الحارس الأمني لم يبدأ' };
+      const fails = Number(s.last24h.auth_fail || 0), limited = Number(s.last24h.auth_limited || 0);
+      return limited ? { status: 'warn', detail: `بُلغ حدّ محاولات الدخول ${limited} مرة · ${fails} محاولة فاشلة خلال 24 س`, advice: 'إن لم تكن أنت: المحاولات رُفضت، والحدّ يمنع التخمين، ومصدرها المباشر يُحظر. لا تشارك رمز التحقق مع أحد' } : { status: 'ok', detail: fails ? `${fails} محاولة دخول فاشلة خلال 24 س (تحت الحد)` : 'لا محاولة دخول فاشلة' };
+    }),
   ],
   agents: [
     c('agents.persist', 'حفظ ذاكرة العقل', 'تعلّم لا يُحفظ يضيع عند إعادة التشغيل.', (f) => f.brainPersistFailures > 0 ? { status: 'warn', detail: `${f.brainPersistFailures} فشل حفظ منذ الإقلاع`, advice: 'راجع حالة قاعدة البيانات (قسم التخزين)' } : { status: 'ok', detail: 'كل الحفظ ناجح' }),
@@ -172,11 +208,21 @@ export const PATROL_CHECKS: Readonly<Record<EngineerModule, Check[]>> = Object.f
     c('platforms.expiry', 'صلاحية رموز المنصات', 'رمز ينتهي دون تجديد يوقف القراءة والنشر فجأة.', (f) => { if (!f.platforms.some((p) => p.connected && p.expiresAt)) return { status: 'skip', detail: 'المنصات لا تعلن تاريخ انتهاء (تُجدَّد تلقائياً)' }; const expd = (p: { expiresAt: string | null }) => (ageMs(p.expiresAt, f.nowMs) ?? -1) >= 0; const goneAuto = f.platforms.filter((p) => p.connected && p.expiresAt && p.autoRenew && expd(p)); const soon = f.platforms.filter((p) => p.connected && p.expiresAt && !p.autoRenew && (ageMs(p.expiresAt, f.nowMs) ?? -Infinity) > -7 * D); const gone = soon.filter(expd); if (goneAuto.length && !gone.length) return { status: 'warn', detail: `انتهى قبل التجديد الآلي: ${goneAuto.map((p) => pa(p.id)).join('، ')} — حارس الرموز يعيد التجديد`, advice: 'لا شيء منك؛ إن تكرر راجع سجل حارس الرموز' }; if (!gone.length && !soon.length) return { status: 'ok', detail: 'كل الرموز تُجدَّد آلياً قبل انتهائها أو لا تنتهي' }; return gone.length ? { status: 'fail', detail: `منتهية: ${gone.map((p) => pa(p.id)).join('، ')}`, advice: 'أعد الربط الآن' } : soon.length ? { status: 'warn', detail: `تنتهي خلال 7 أيام: ${soon.map((p) => pa(p.id)).join('، ')}`, advice: 'أعد الربط قبل الانتهاء' } : { status: 'ok', detail: 'لا رمز ينتهي قريباً' }; }),
     c('platforms.reauth', 'طلبات إعادة ربط', 'المنصة أبلغت أن الرمز لم يعد صالحاً.', (f) => f.reauthUnread ? { status: 'fail', detail: `${f.reauthUnread} طلب غير مقروء`, advice: 'افتح مركز ربط المنصات' } : { status: 'ok', detail: 'لا طلبات' }),
     c('platforms.publish', 'نجاح النشر · 24 ساعة', 'فشل النشر المتكرر يضيّع المحتوى المعتمد.', (f) => { const t = f.publishOk24h + f.publishFailed24h; return t === 0 ? { status: 'ok', detail: 'لا محاولات نشر اليوم' } : f.publishFailed24h / t > 0.3 ? { status: 'warn', detail: `${f.publishFailed24h} فشل من ${t}`, advice: 'افتح سجل النشر لمعرفة رمز الفشل' } : { status: 'ok', detail: `${f.publishOk24h} نجاح من ${t}` }; }),
+    c('platforms.forgery', 'أحداث webhook مزوّرة', 'حدث بتوقيع خاطئ إما محاولة تزوير (مرفوضة) أو سرّ تطبيق لا يطابق لدى Meta فتضيع التعليقات.', (f) => {
+      const s = f.security;
+      if (!s) return { status: 'skip', detail: 'الحارس الأمني لم يبدأ' };
+      return s.forgedWebhooks1h >= 5 ? { status: 'warn', detail: `${s.forgedWebhooks1h} حدثاً بتوقيع خاطئ في ساعة — رُفضت كلها`, advice: 'إن توقفت تعليقات فيسبوك/إنستغرام معها فـMETA_APP_SECRET في Render لا يطابق لوحة المطوّر (بيد المالك)؛ وإلا فهي محاولات تزوير مرفوضة' } : { status: 'ok', detail: (s.last24h.webhook_forged || 0) ? `${s.last24h.webhook_forged} حدثاً مزوّراً رُفض خلال 24 س` : 'كل webhook وصل بتوقيع صحيح' };
+    }),
   ],
   gate: [
     c('gate.window', 'ردود تقترب نهاية نافذتها', 'رسالة الزبون على ميتا لا يُرد عليها بعد 24 ساعة؛ رد جاهز لم يُعتمد سيضيع.', (f) => f.draftsExpiringSoon ? { status: 'warn', detail: `${f.draftsExpiringSoon} رداً تنتهي نافذته خلال ساعتين`, advice: 'اعتمدها الآن من صندوق الزبائن' } : { status: 'ok', detail: 'لا ردود على وشك الانتهاء' }),
     c('gate.mode', 'وضع الإرسال', 'التلقائي يرسل بلا مراجعتك.', (f) => f.sendModeAuto ? { status: 'ok', detail: 'تلقائي — بقرارك (ليس عطلاً؛ يمكنك إعادته إلى «موافقة» من مركز السيطرة)' } : { status: 'ok', detail: 'لا إرسال بلا موافقتك' }),
     c('gate.expired', 'مسودات تجاوزت نافذة الرد', 'مسودة منتهية النافذة لا يمكن إرسالها وتضلّل العدّاد.', (f) => f.expiredPendingDrafts ? { status: 'warn', detail: `${f.expiredPendingDrafts} مسودة منتهية ما زالت «معلّقة»`, advice: 'المهندس يعلّمها منتهية (بلا حذف)', repair: 'drafts_expired' } : { status: 'ok', detail: 'لا مسودات منتهية معلّقة' }),
+    c('gate.canary', 'الحرّاس يعملون فعلاً على الخادم الحي', 'اختبار حي لكل حارس (الموافقة، الادعاءات، عزل نص الزبون، حجب المصدر، سقف Gemini، كاشف الاختراق، سرّ الجلسات) بمدخلات هجومية.', (f) => {
+      const g = f.guards;
+      if (!g) return { status: 'skip', detail: 'أول اختبار للحرّاس بعد الإقلاع بدقيقة' };
+      return g.failed ? { status: 'fail', detail: `${g.failed} من ${g.total} حرّاس لا يحمون: ${g.failedLabels.join('، ')}`, advice: 'عطل حرج أُحيل لمهندس الكود؛ المهندس يعيد الاختبار كل 30 د ويغلقه ✅ متى عاد يحمي' } : { status: 'ok', detail: `${g.total} حارساً اجتازوا الهجوم التجريبي${g.ageMin != null ? ` (قبل ${g.ageMin} د)` : ''}` };
+    }),
   ],
   automation: [
     c('automation.watcherErrors', 'أخطاء المراقبين المتتالية', 'خطأ متكرر في القراءة يعني تعليقات لا تُرى.', (f) => { const w = f.watcherErrors; const worst = Math.max(w.youtube, w.meta); return worst >= 3 ? { status: worst >= 6 ? 'fail' : 'warn', detail: `يوتيوب ${w.youtube} · ميتا ${w.meta}`, advice: 'المهندس يجدد الرمز ويعيد الدورة' } : { status: 'ok', detail: `يوتيوب ${w.youtube} · ميتا ${w.meta}` }; }),
@@ -195,12 +241,30 @@ export const PATROL_CHECKS: Readonly<Record<EngineerModule, Check[]>> = Object.f
     c('monitor.leak', 'اتجاه الذاكرة (تسرّب؟)', 'نمو ثابت بلا توقف هو تسرّب سيُسقط الخادم بعد ساعات.', (f) => { if (f.memorySlopeMbPerHour == null) return { status: 'skip', detail: 'يجمع عيّنات (يحتاج 20 دقيقة)' }; const left = f.limitMb - f.memoryMb; const hrs = f.memorySlopeMbPerHour > 0 ? left / f.memorySlopeMbPerHour : Infinity; return f.memorySlopeMbPerHour > 5 && hrs < 24 ? { status: 'warn', detail: `+${f.memorySlopeMbPerHour.toFixed(1)} ميغا/ساعة — الحد بعد ~${Math.round(hrs)} س`, advice: 'إن استمر: تسرّب — راجع آخر تغيير نُشر' } : { status: 'ok', detail: `${f.memorySlopeMbPerHour >= 0 ? '+' : ''}${f.memorySlopeMbPerHour.toFixed(1)} ميغا/ساعة — مستقر` }; }),
     c('monitor.lag', 'سرعة الاستجابة', 'تأخّر حلقة الأحداث يعني عملاً متزامناً ثقيلاً يجمّد الطلبات.', (f) => f.loopLagMs >= 400 ? { status: 'fail', detail: `${f.loopLagMs}ms`, advice: 'عمل ثقيل يجمّد الخادم — راجع السجل' } : f.loopLagMaxMs >= 1500 ? { status: 'warn', detail: `ذروة ${f.loopLagMaxMs}ms (الحالي ${f.loopLagMs}ms)`, advice: 'ذروة عابرة؛ راقب تكرارها' } : { status: 'ok', detail: `${f.loopLagMs}ms` }),
     c('monitor.pressure', 'ضغط الخطة المجانية', 'الضغط الحرج يؤجّل الأعمال الثقيلة.', (f) => f.usageLevel === 'critical' ? { status: 'warn', detail: 'حرج — الأعمال الثقيلة مؤجّلة', advice: 'يعود تلقائياً بتجدد الحصة' } : { status: 'ok', detail: f.usageLevel }),
+    c('monitor.edge', 'الوصول من الإنترنت (Netlify + Render + الشهادات)', 'الخادم السليم من الداخل قد لا يصل إليه الزبون: وكيل معطّل أو شهادة منتهية أو خدمة موقوفة.', (f) => {
+      const e = f.edge;
+      if (!e) return { status: 'skip', detail: 'أول فحص خارجي بعد دقائق من الإقلاع' };
+      const stale = e.ageMin != null && e.ageMin > 60;
+      if (e.worst === 'down' || e.worst === 'tls_expired') return { status: 'fail', detail: e.details.join(' · '), advice: e.remedy || 'المهندس يعيد الفحص ويحيل السبب لمالكه' };
+      if (e.worst === 'tls_soon' || e.worst === 'headers' || e.worst === 'slow') return { status: 'warn', detail: e.details.join(' · '), advice: e.remedy || null };
+      return { status: stale ? 'warn' : 'ok', detail: `${e.details.join(' · ')}${stale ? ` (آخر فحص قبل ${e.ageMin} د)` : ''}`, advice: stale ? 'الفحص الخارجي متوقف — يعيد المهندس تسليحه' : null };
+    }),
+    c('monitor.freeplans', 'كل حصة مجانية وتنبؤ نهاية الشهر', 'نفاد حصة واحدة (ساعات Render، نقل Neon، Drive…) يوقف المشروع أو النسخ — الإنذار قبل النفاد لا بعده.', (f) => {
+      const p = f.plans;
+      if (!p || p.status === 'skip') return { status: 'skip', detail: 'لا قياس للحصص بعد' };
+      return { status: p.status, detail: p.details.join(' · '), advice: p.status === 'ok' ? null : `الأعلى: ${p.worstDetail}. الحارس يبطئ الأعمال الثقيلة تلقائياً عند 80%؛ قرار المالك: خطة أعلى أو تقليل التكرار.` };
+    }),
   ],
   storage: [
     c('storage.ready', 'قاعدة البيانات جاهزة', 'بلا قاعدة لا يُحفظ شيء.', (f) => f.storageReady ? { status: 'ok', detail: f.storageBackend } : { status: 'fail', detail: 'غير جاهزة', advice: 'تحقق من Neon وDATABASE_URL' }),
     c('storage.tls', 'تشفير الاتصال بالقاعدة', 'اتصال بلا تحقق من الشهادة قابل للاعتراض.', (f) => f.storageBackend !== 'postgres' ? { status: 'skip', detail: 'تخزين ملف محلي' } : f.tls === 'verified' ? { status: 'ok', detail: 'TLS موثّق' } : { status: 'warn', detail: `TLS: ${f.tls || '—'}`, advice: 'راجع إعداد SSL لـ Neon' }),
     c('storage.persist', 'الحفظ', 'فشل الحفظ يعني ضياع كل تغيير عند إعادة التشغيل.', (f) => f.persistFailStreak ? { status: 'fail', detail: `${f.persistFailStreak} فشل متتالٍ`, advice: 'المهندس يعيد المحاولة', repair: 'persist' } : { status: 'ok', detail: `${f.writesDone} كتابة منفّذة` }),
     c('storage.coalesce', 'كفاءة الكتابة', 'دمج الكتابات يحمي حصة Neon المجانية.', (f) => f.writesRequested < 20 ? { status: 'ok', detail: 'عيّنة قليلة بعد' } : { status: 'ok', detail: `${Math.round((1 - f.writesDone / Math.max(1, f.writesRequested)) * 100)}% موفّرة` }),
+    c('storage.size', 'حجم القاعدة مقابل سقف الخطة المجانية', 'Neon المجاني 0.5 غيغا للحساب؛ عند امتلائها يتوقف الحفظ كلياً.', (f) => {
+      const v = f.storageSize;
+      if (!v || v.status === 'skip') return { status: 'skip', detail: v?.detail || 'لم يُقس بعد' };
+      return { status: v.status, detail: v.detail, advice: v.advice };
+    }),
   ],
   memory: [
     c('memory.records', 'سجل الأداء', 'سجل الأداء هو ما يتعلّم منه العقل أي محتوى ينجح.', (f) => f.performanceRecords > 0 ? { status: 'ok', detail: `${f.performanceRecords} قياساً` } : { status: 'warn', detail: 'فارغ', advice: 'يمتلئ مع مزامنة الأرقام بعد النشر' }),
@@ -269,6 +333,7 @@ export const CHECK_IMPACT: Readonly<Record<string, number>> = Object.freeze({
   'products.images': 2, 'products.showroom': 2, 'products.integrity': 2, 'products.stock': 2, 'products.count': 2,
   'platforms.expiry': 2, 'platforms.webhook': 2, 'platforms.verified': 2, 'monitor.leak': 2, 'core.cycles': 2,
   'automation.timers': 2, 'automation.watcherErrors': 2, 'auth.secret': 2, 'gate.expired': 2,
+  'gate.canary': 3, 'monitor.edge': 3, 'auth.dependencies': 2, 'storage.size': 3, 'monitor.freeplans': 2, 'auth.bruteforce': 2, 'platforms.forgery': 2,
 });
 export const checkImpact = (id: string): number => CHECK_IMPACT[id] ?? (id.startsWith('capacity.') ? 2 : 1);
 

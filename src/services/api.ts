@@ -1806,6 +1806,20 @@ ${payload.topic || payload.productName || 'أنظمة وحلول التقسيط 
     if (!res.ok || !data.success) throw new Error(data.error || 'تعذّر تحديث العطل');
     return data;
   },
+  /** الحارس: فحص فوري للحرّاس والوصول من الإنترنت والخزن (للمالك). */
+  async runEngineerGuardian(): Promise<any> {
+    const res = await fetch('/api/engineer/guardian/run', { method: 'POST', headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' } });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذّر فحص الحارس');
+    return data;
+  },
+  /** الحارس: رفع كل الحظر المؤقت (قرار المالك). */
+  async unblockEngineerGuardian(): Promise<any> {
+    const res = await fetch('/api/engineer/guardian/unblock', { method: 'POST', headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' } });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.success) throw new Error(data.error || 'تعذّر رفع الحظر');
+    return data;
+  },
   /** المهندس المشرف: تشغيل/إيقاف (للمالك). */
   async toggleEngineer(enabled: boolean): Promise<any> {
     const res = await fetch('/api/engineer/toggle', { method: 'POST', headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }) });

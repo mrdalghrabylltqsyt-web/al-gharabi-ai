@@ -1,0 +1,51 @@
+# مراقبة الثغرات الأسبوعية (2026-10-29) — جزء من المهندس المشرف.
+#
+# CI يفحص المكتبات عند كل طلب دمج، لكن الثغرات تُكتشف في مكتبات قائمة بعد الدمج. هذا الفحص يعمل
+# أسبوعياً على main: يشغّل npm audit لمكتبات الإنتاج، وإن وُجدت ثغرة عالية أو حرجة يفتح تذكرة واحدة
+# (أو يحدّث القائمة) بعنوان ثابت فيراها مهندس الكود المجدول ويصلحها بطلب دمج. لا دمج ولا نشر هنا.
+name: security-watch
+
+on:
+  schedule:
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - name: npm audit snapshot (production)
+        run: node scripts/dep-audit-snapshot.mjs dep-audit.json
+      - name: open or update the vulnerability issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          node -e '
+            const s = require("./dep-audit.json");
+            const c = s.counts || {};
+            const bad = (c.critical || 0) + (c.high || 0);
+            const lines = (s.packages || []).filter(p => ["critical","high"].includes(p.severity)).map(p => `- **${p.severity}** \`${p.name}\`${p.fixAvailable ? " (له إصلاح)" : ""}${p.title ? ` — ${p.title}` : ""}`);
+            require("fs").writeFileSync("body.md", [
+              `فحص ${s.at}: حرجة ${c.critical||0} · عالية ${c.high||0} · متوسطة ${c.moderate||0}`,
+              s.ok ? "" : `تعذّر الفحص: ${s.error}`,
+              "", ...lines, "",
+              "الإجراء: تحديث المكتبة المصابة (npm audit fix أو طلب Dependabot) مع تشغيل الاختبارات كاملة ثم طلب دمج للمراجعة.",
+            ].join("\n"));
+            require("fs").writeFileSync("bad.txt", String(bad));
+          '
+          BAD=$(cat bad.txt)
+          TITLE="🛡 ثغرات مكتبات الإنتاج (مراقبة أسبوعية)"
+          NUM=$(gh issue list --state open --search "in:title \"$TITLE\"" --json number --jq '.[0].number' || true)
+          if [ "$BAD" -gt 0 ]; then
+            if [ -n "$NUM" ]; then gh issue comment "$NUM" --body-file body.md; else gh issue create --title "$TITLE" --body-file body.md; fi
+          elif [ -n "$NUM" ]; then
+            gh issue close "$NUM" --comment "✅ تحقق المهندس من زوالها: لا ثغرة عالية ولا حرجة في فحص $(date -u +%F)."
+          fi

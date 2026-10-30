@@ -21,6 +21,9 @@ RUN npm ci --include=dev --no-audit --no-fund
 COPY . .
 # vite build ثم حزمة المصدر الموثوقة ثم تجميع server.ts إلى dist/server.cjs.
 RUN npm run build
+# لقطة ثغرات مكتبات الإنتاج زمن البناء ليعرفها المهندس المشرف على الخادم الحي (فحص auth.dependencies).
+# تكتب الملف دائماً ولا تُفشل البناء أبداً، وتبقى خارج dist فلا تُخدم علناً.
+RUN node scripts/dep-audit-snapshot.mjs /app/dep-audit.json
 
 FROM node:22-slim AS runtime
 WORKDIR /app
@@ -29,6 +32,7 @@ ENV NODE_ENV=production
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force
 COPY --from=build /app/dist ./dist
+COPY --from=build /app/dep-audit.json ./dep-audit.json
 # حزمة المصدر الموثوقة المُجمَّعة زمن البناء (شجرة المشروع الكاملة + commit + بصمة)
 # موجودة داخل dist/dr-source أصلاً، فهي منسوخة مع dist. لا .git ولا سرّ داخل الصورة.
 # نظام DR يقرأها وقت التشغيل ليبني نسخة مصدر كاملة (SOURCE_INCOMPLETE لا يُخفَّف).

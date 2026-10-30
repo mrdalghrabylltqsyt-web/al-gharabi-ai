@@ -16,6 +16,7 @@ import {
   KNOWN_AI_PLATFORMS,
   DEFAULT_MAX_PROMPT_CHARS,
   DEFAULT_MAX_OUTPUT_TOKENS,
+  enforcePromptLimit,
 } from "./engine/ai/firewall";
 import {
   resolveGeminiDailyLimit,
@@ -23,7 +24,7 @@ import {
   GEMINI_LIMIT_DEFAULT,
   GEMINI_LIMIT_MAX_SAFE,
 } from "./engine/ai/quotaPolicy";
-import { wrapUntrustedText, UNTRUSTED_TEXT_POLICY_AR, sanitizeUntrustedText } from "./engine/ai/untrusted";
+import { wrapUntrustedText, UNTRUSTED_TEXT_POLICY_AR, sanitizeUntrustedText, UNTRUSTED_CLOSE_TAG } from "./engine/ai/untrusted";
 import { registerSocialManagerRoutes } from "./engine/social/routes";
 import { AgentOrchestrator } from "./engine/agent/orchestrator";
 import { registerAgentRoutes } from "./engine/agent/routes";
@@ -729,6 +730,11 @@ import { realProductPhrases } from "./src/utils/productPhrases";
 import { LiveEventBuffer, classifyLogLine, auditToLiveEvent, buildLiveModules, buildLiveInsights, buildLiveCycles, platformAr, type LiveEventInput } from "./engine/ops/liveRoom";
 import { detectIncidents, decideNext, trackIncidents, closeRecovered, closureReportAr, addReport, withTimeout, emptyEngineerState, normalizeEngineerState, incidentsFromPatrol, incidentsFromDefects, ENGINEER_POLICY, type EngineerState, type EngineerSnapshot, type Incident, type ReportStep, type EngineerReport } from "./engine/ops/siteEngineer";
 import { PATROL_ORDER, COLLECTION_CAPS, COLLECTION_AR, inspectModule, healthScore, healthBreakdown, slopePerHour, growthPerDay, type PatrolFacts, type ModuleInspection } from "./engine/ops/engineerPatrol";
+import { SecuritySentinel, resolveClientIdentity, classifyRequest, classifyResponse, maskIp, SECURITY_KIND_AR, SENTINEL_POLICY, type ClientIdentity, type SecurityEventKind } from "./engine/ops/securitySentinel";
+import { runGuardCanary, guardFailureLine, GUARD_PROBES, type GuardDeps, type GuardRound } from "./engine/ops/guardCanary";
+import { edgeTargets, judgeEdge, edgeRound, edgeFailureLine, edgeRemedy, EDGE_POLICY, hostOf, type EdgeRound, type EdgeHttpResult, type EdgeTlsResult } from "./engine/ops/edgeProbe";
+import { judgePlans, judgeStorage, bytesGrowthPerDay, PLAN_LABELS, type PlanQuota, type StorageSizeReport } from "./engine/ops/resourceWatch";
+import tls from "tls";
 import { recordFailure, sweepLedger, markDefect, openDefects, ledgerSummary, normalizeLedger, emptyLedger, defectLogLine, repairPlanFor, recordRepair, recentlyRepaired, countsAsRegression, isDeployOverlapCrash, normalizeRoute, LEDGER_POLICY, type DefectLedger, type FailureEvent, type RepairPlan } from "./engine/ops/defectLedger";
 import { TOKEN_KEEPER_POLICY, isPermanentRefreshError, backoffMs, decideRenewal, ownerTokenNeeds, autoRenewable, shouldMarkReauth, keeperSummary, leadFor, fmtDur, type TokenState, type RenewalKind, type KeeperRun } from "./engine/ops/tokenKeeper";
 import { PROBE_ROUTES, PROACTIVE_POLICY, evaluateProbe, summarizeRound, deployVerdict, RouteLatency, slowRoutes, isSpiking, buildForecasts, notificationHygiene, type ProbeRound, type Forecast } from "./engine/ops/engineerProactive";
@@ -1048,6 +1054,70 @@ app.use((_req, res, next) => {
   // preload لتفادي قفل نطاق فرعي لا يدعم HTTPS. لا يُرسَل في التطوير (http).
   if (process.env.NODE_ENV === "production") res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
   if (process.env.NODE_ENV === "production") res.setHeader("Content-Security-Policy", CONTENT_SECURITY_POLICY);
+  next();
+});
+
+// ═══ الحارس الأمني للمهندس المشرف (2026-10-29) ═══
+// يرى كل محاولة اختراق لحظة وقوعها (فحص ثغرات، اجتياز، حقن، سحب المصدر، تخمين الدخول، webhook مزوّر)،
+// ويحظر مؤقتاً **المصدر المباشر الذي لا يُزوَّر فقط** — لا يحظر عقدة وكيل Netlify ولا عنواناً داخلياً
+// ولا عنواناً دخل منه المالك (engine/ops/securitySentinel.ts). الطلب المحظور يُرفض قبل أي معالجة.
+const sentinelSalt = crypto.randomBytes(16).toString("hex");
+let securitySentinel = new SecuritySentinel(sentinelSalt, Date.now());
+let guardianDirty = false;
+let securityAlertAt = 0;
+let securityAlertLevel: string = "calm";
+/** هل يرى الحارس عناوين الزوار فعلاً؟ (لو كانت كل الطلبات «داخلية» فالوكيل لا يمرّر العنوان — يُعلن ذلك). */
+const sentinelSight = { direct: 0, proxied: 0, internal: 0 };
+function requestIdentity(req: express.Request): ClientIdentity {
+  const h = (n: string): string | null => { const v = req.headers[n]; return Array.isArray(v) ? v.join(",") : v ? String(v) : null; };
+  return resolveClientIdentity({ forwardedFor: h("x-forwarded-for"), socketIp: req.socket?.remoteAddress || null, nfClientIp: h("x-nf-client-connection-ip"), nfRequestId: h("x-nf-request-id"), host: h("host"), forwardedHost: h("x-forwarded-host") });
+}
+/** مفتاح حدود المحاولات: عنوان الزائر الحقيقي (كان req.ip = عنوان وكيل Render المشترك بين الجميع،
+ *  فكان 12 طلباً من أي أحد يقفل دخول Google على المالك نفسه). */
+function clientKey(req: express.Request): string {
+  try { return requestIdentity(req).ip || "unknown"; } catch { return "unknown"; }
+}
+function securityRecord(kind: SecurityEventKind, id: ClientIdentity, where: string): void {
+  const nowMs = Date.now();
+  const r = securitySentinel.record(kind, id, where, nowMs);
+  guardianDirty = true;
+  if (r.blocked) {
+    console.log(`[security] source_blocked source=${maskIp(id.edge)} kind=${kind} until=${new Date(r.until || nowMs).toISOString()}`);
+    liveEvent({ module: "auth", level: "warn", title: "🛡 الحارس حظر مصدراً يهاجم", text: `${SECURITY_KIND_AR[kind]} — ${maskIp(id.edge)} محظور مؤقتاً، لا يمسّك` });
+  }
+  maybeSecurityAlert(nowMs, r.blocked);
+}
+/** تنبيه المالك: عند حظر جديد أو تحوّل المستوى إلى «هجوم» — مرة في الساعة على الأكثر، ويُغلق ✅ حين يهدأ. */
+function maybeSecurityAlert(nowMs: number, newBlock: boolean): void {
+  const level = securitySentinel.level(nowMs);
+  const escalated = level === "attack" && securityAlertLevel !== "attack";
+  securityAlertLevel = level;
+  if (!(newBlock || escalated) || nowMs - securityAlertAt < 3600000) return;
+  securityAlertAt = nowMs;
+  const s = securitySentinel.summary(nowMs);
+  const kinds = Object.entries(s.last24h).filter(([, n]) => Number(n) > 0).map(([k, n]) => `${SECURITY_KIND_AR[k as SecurityEventKind]} ×${n}`).join("، ");
+  setTimeout(() => {
+    try { pushNotification("owner", "security_alert", `🛡 الحارس الأمني: ${s.levelText}`, `${kinds || "محاولات مرصودة"}. ${s.activeBlocks.length ? `حُظر ${s.activeBlocks.length} مصدراً مؤقتاً. ` : ""}كل المحاولات رُفضت ولا إجراء مطلوب منك؛ التفاصيل في «الحارس الأمني» بغرفة المهندس.`.slice(0, 400), "warning", "live_room"); } catch { /* */ }
+  }, 0).unref?.();
+}
+app.use((req, res, next) => {
+  let id: ClientIdentity;
+  try { id = requestIdentity(req); } catch { return next(); }
+  sentinelSight[id.internal ? "internal" : id.viaProxy ? "proxied" : "direct"] += 1;
+  if (id.internal) return next(); // فحوص المهندس الداخلية وفحص صحة المنصة
+  if (req.path !== "/api/health" && securitySentinel.isBlocked(id, Date.now())) {
+    res.setHeader("Retry-After", "3600");
+    return res.status(403).type("text/plain").send("blocked");
+  }
+  let kind: SecurityEventKind | null = null;
+  try { kind = classifyRequest({ path: req.path, rawUrl: req.originalUrl, blockedSource: isBlockedSourceRequest(req.path) }); } catch { /* */ }
+  res.on("finish", () => {
+    try {
+      if ((req as any).user) return; // جلسة صحيحة: ليس مهاجماً
+      const k = kind || classifyResponse({ method: req.method, path: req.path, status: res.statusCode });
+      if (k) securityRecord(k, id, String(req.originalUrl || req.path));
+    } catch { /* الحارس لا يُسقط أي طلب */ }
+  });
   next();
 });
 
@@ -1853,8 +1923,9 @@ function requireOwner(req: express.Request, res: express.Response, next: express
 // 1. Google Sign-In verification endpoint
 app.post("/api/auth/google", async (req, res) => {
   try {
-    const key = `google:${req.ip}`;
-    if (!allowAuthAttempt(key)) return res.status(429).json({ success: false, error: "محاولات المصادقة كثيرة. حاول لاحقاً." });
+    const key = `google:${clientKey(req)}`;
+    // سقف كلي إضافي: من يزوّر عنوانه ليتجاوز الحدّ الفردي يصطدم بهذا.
+    if (!allowAuthAttempt(key) || !allowAuthAttempt("google:all", 120)) return res.status(429).json({ success: false, error: "محاولات المصادقة كثيرة. حاول لاحقاً." });
     const { credential } = req.body;
     if (!credential || typeof credential !== "string") {
       return res.status(400).json({ success: false, error: "رمز المصادقة من Google مطلوب." });
@@ -1914,6 +1985,7 @@ app.post("/api/auth/google", async (req, res) => {
     }
 
     const session = createSessionForUser(user);
+    guardianTrust(req, user);
     console.log(`[Auth] User authenticated: ${logSafeEmailId(user.email)} (${user.role})`);
 
     return res.json({
@@ -1934,8 +2006,9 @@ app.post("/api/auth/request-owner-challenge", async (req, res) => {
   const { email } = req.body;
   const normalizedEmail = (email || "").toLowerCase().trim();
   if (!OWNER_EMAIL) return res.status(503).json({ success: false, message: "لم يتم ضبط بريد مالك النظام على الخادم بعد." });
-  const challengeKey = `${req.ip || "unknown"}:${normalizedEmail}`;
-  if (!allowChallengeAttempt(challengeKey)) return res.status(429).json({ success: false, message: "تم تجاوز عدد محاولات التحقق المسموح مؤقتاً. حاول لاحقاً." });
+  const challengeKey = `${clientKey(req)}:${normalizedEmail}`;
+  // سقف لكل بريد مهما تغيّر العنوان: لا إغراق لصندوق المالك برموز.
+  if (!allowChallengeAttempt(challengeKey) || !allowAuthAttempt(`challenge-email:${normalizedEmail}`, 15)) return res.status(429).json({ success: false, message: "تم تجاوز عدد محاولات التحقق المسموح مؤقتاً. حاول لاحقاً." });
 
   if (normalizedEmail !== OWNER_EMAIL) {
     // منع كشف وجود حساب مالك: رسالة محايدة لا تؤكّد إصدار الرمز ولا تنفيه، ولا
@@ -2000,7 +2073,8 @@ app.post("/api/auth/verify-challenge", async (req, res) => {
   // حدّ محاولات على التحقق من الرمز (كان غائباً): الرمز 6 أرقام ونافذته 10 دقائق،
   // فبلا حدّ يمكن تخمينه بلا نهاية. الحدّ لكل (IP + بريد) داخل نافذة موحّدة،
   // ويُستهلَك قبل مقارنة الرمز كي لا يمنح الردّ أي إشارة عن صحّة الرمز.
-  if (!allowAuthAttempt(`verify-challenge:${req.ip || "unknown"}:${normalizedEmail}`, 10)) {
+  if (!allowAuthAttempt(`verify-challenge:${clientKey(req)}:${normalizedEmail}`, 10) || !allowAuthAttempt(`verify-email:${normalizedEmail}`, 20)) {
+    // الحدّ لكل (عنوان + بريد) + سقف لكل بريد مهما تغيّر العنوان (يمنع تخمين الرمز بتدوير العناوين).
     return res.status(429).json({ success: false, error: "تم تجاوز عدد محاولات التحقق المسموح مؤقتاً. حاول لاحقاً." });
   }
 
@@ -2033,6 +2107,7 @@ app.post("/api/auth/verify-challenge", async (req, res) => {
   }
 
   const session = createSessionForUser(user);
+  guardianTrust(req, user);
   if (!(await persistCriticalOr503(res))) return;
   return res.json({
     success: true,
@@ -2060,7 +2135,7 @@ async function handlePreviewLogin(req: express.Request, res: express.Response) {
     return res.status(400).json({ success: false, error: "لا يُقبل التوكن في سطر الطلب. استخدم جسم الطلب (POST)." });
   }
 
-  const rateKey = `preview:${req.ip || "unknown"}`;
+  const rateKey = `preview:${clientKey(req)}`;
   if (!allowAuthAttempt(rateKey, 10)) {
     return res.status(429).json({ success: false, error: "تم تجاوز عدد محاولات الدخول المسموح مؤقتاً. حاول لاحقاً." });
   }
@@ -2076,6 +2151,7 @@ async function handlePreviewLogin(req: express.Request, res: express.Response) {
   if (!owner) return res.status(403).json({ success: false, error: "حساب المالك غير متاح." });
 
   const session = createSessionForUser(owner, previewEpoch.value);
+  guardianTrust(req, owner);
   auditLog.unshift({ id: crypto.randomUUID(), at: new Date().toISOString(), userId: "system", action: "owner_preview_login", detail: "preview-session-created" });
   if (auditLog.length > 100) auditLog.pop();
   if (!(await persistCriticalOr503(res))) return;
@@ -15557,6 +15633,26 @@ function defectRepairPlaybook(fp: string): EngineerPlan | null {
       } }],
       verify: () => last,
     };
+    case "verify_guard": return {
+      steps: [{ label: `إعادة اختبار الحارس «${plan.guard}» بهجوم تجريبي على الخادم الحي`, run: async () => {
+        const r = runGuardRound();
+        const x = r.results.find((y) => y.id === plan.guard);
+        return keep(x ? { ok: x.ok, detail: x.ok ? `الحارس يحمي الآن: ${x.detail}` : `ما زال لا يحمي: ${x.detail}` } : { ok: true, detail: "الحارس لم يعد ضمن الاختبار (أُعيدت تسميته) — لا عطل قائم" });
+      } }],
+      verify: () => last,
+    };
+    case "verify_edge": return {
+      steps: [{ label: `إعادة الفحص من الإنترنت (${plan.target === "public" ? "العنوان العام" : "Render مباشرة"} + الشهادة)`, timeoutMs: 90000, run: async () => {
+        const r = await runEdgeRound();
+        const x = r?.results.find((y) => y.id === plan.target);
+        if (!x) return keep({ ok: true, detail: "الهدف لم يعد مضبوطاً في العناوين العامة — لا عطل قائم" });
+        const good = x.verdict === "ok" || x.verdict === "slow";
+        const other = r?.results.find((y) => y.id !== plan.target);
+        const where = !good && other ? (other.verdict === "ok" || other.verdict === "slow" ? ` — ${other.label} سليم، فالعطل في طريق ${x.label} لا في الخادم` : ` — ${other.label} معطّل أيضاً، فالعطل في الخادم نفسه`) : "";
+        return keep({ ok: good, detail: good ? `يُفتح الآن من الإنترنت: ${x.detail}` : `${x.detail}${where}. ${edgeRemedy(x.verdict, x.id)}` });
+      } }],
+      verify: () => last,
+    };
     case "rerun_backup": return engineerPlaybook({ key: "backup_stale", kind: "backup_stale", module: "backup", severity: "critical", title: g.title, evidence: [] });
     case "retry_persist": return engineerPlaybook({ key: "persist_failing", kind: "persist_failing", module: "storage", severity: "critical", title: g.title, evidence: [] });
     default: return null; // owner/developer: لا خطوات تشغيلية — يُصعَّد/يُحال في decideNext.
@@ -15948,6 +16044,7 @@ function patrolFacts(module: string | null = null): PatrolFacts {
     audienceKnown: Object.fromEntries(["facebook", "instagram", "youtube"].filter((p) => linked(p)).map((p) => [p, typeof (((workspace as any).platformAudience || {})[p]?.followers) === "number"])),
     performanceRecords: Array.isArray((workspace as any).performanceRecords) ? (workspace as any).performanceRecords.length : 0,
     collections,
+    ...safe(() => guardianFacts(nowMs, { geminiUsed: Number(g?.usedToday || 0), geminiLimit: Number(g?.dailyGuard || 0), youtubePercent: yq && typeof yq.usedPercent === "number" ? yq.usedPercent : null }), {}),
   };
 }
 
@@ -16043,6 +16140,225 @@ function patrolView(full = true) {
   };
 }
 
+// ═══ المهندس المشرف — الحارس (2026-10-29): الحرّاس + الحافة + الخطط المجانية + الخزن + الأمن ═══
+// كناري الحرّاس كل 30 د (engine/ops/guardCanary.ts)، فحص الحافة من الإنترنت كل 15 د (edgeProbe.ts)،
+// حجم القاعدة الحقيقي كل 6 س (resourceWatch.ts)، وحالة الحارس الأمني تُحفظ كل 10 د عند تغيّرها.
+// كل فشل يدخل سجل الأعطال بقاعدته (guard:/edge:) فيُصلح/يُتحقق منه ويُغلق ✅ بتقرير — لا إغلاق صامت.
+const STORAGE_KEY_GUARDIAN = "engineerGuardian";
+const GUARDIAN_POLICY = Object.freeze({ canaryMs: 30 * 60000, firstCanaryMs: 60000, firstEdgeMs: 4 * 60000, storageMs: 6 * 3600000, firstStorageMs: 5 * 60000, persistMinMs: 10 * 60000 });
+let guardRound: GuardRound | null = null;
+let edgeLast: EdgeRound | null = null;
+let edgeRunning = false;
+let storageSizeLast: (StorageSizeReport & { growthPerDay: number | null }) | null = null;
+let dbSamples: Array<{ t: number; v: number }> = [];
+let guardianPersistAt = 0;
+const guardianTimers: Array<ReturnType<typeof setInterval>> = [];
+/** لقطة ثغرات مكتبات الإنتاج التي بُنيت بها هذه النسخة (scripts/dep-audit-snapshot.mjs زمن بناء Docker). */
+type DepAudit = { at: string; ok: boolean; error: string | null; counts: { critical: number; high: number; moderate: number; low: number }; packages: Array<{ name: string; severity: string; fixAvailable: boolean; title: string | null }> };
+const depAudit: DepAudit | null = (() => {
+  try {
+    const raw = JSON.parse(fs.readFileSync(path.join(process.cwd(), "dep-audit.json"), "utf8"));
+    if (!raw || typeof raw !== "object" || !raw.counts) return null;
+    return { at: String(raw.at || ""), ok: raw.ok === true, error: raw.error ? String(raw.error).slice(0, 200) : null, counts: { critical: Number(raw.counts.critical) || 0, high: Number(raw.counts.high) || 0, moderate: Number(raw.counts.moderate) || 0, low: Number(raw.counts.low) || 0 }, packages: (Array.isArray(raw.packages) ? raw.packages : []).slice(0, 15).map((x: any) => ({ name: String(x?.name || "").slice(0, 80), severity: String(x?.severity || ""), fixAvailable: Boolean(x?.fixAvailable), title: x?.title ? String(x.title).slice(0, 160) : null })) };
+  } catch { return null; }
+})();
+
+async function loadGuardianState(): Promise<void> {
+  try {
+    const raw: any = await storageAdapter.read<any>(STORAGE_KEY_GUARDIAN);
+    if (!raw || typeof raw !== "object") return;
+    securitySentinel = new SecuritySentinel(sentinelSalt, Date.now(), raw.sentinel || null);
+    dbSamples = Array.isArray(raw.dbSamples) ? raw.dbSamples.filter((x: any) => Number.isFinite(x?.t) && Number.isFinite(x?.v)).slice(-60) : [];
+  } catch { /* يبدأ نظيفاً */ }
+}
+function persistGuardian(force = false): void {
+  if (!storageReady) return;
+  const nowMs = Date.now();
+  if (!force && (!guardianDirty || nowMs - guardianPersistAt < GUARDIAN_POLICY.persistMinMs)) return;
+  guardianDirty = false; guardianPersistAt = nowMs;
+  const snap = { sentinel: securitySentinel.snapshot(nowMs), dbSamples: dbSamples.slice(-60) };
+  persistQueue = persistQueue.then(() => storageAdapter.write(STORAGE_KEY_GUARDIAN, snap)).catch(() => { guardianDirty = true; });
+}
+/** المالك دخل بنجاح: عنوانه موثوق لا يُحظر (ويُرفع أي حظر عنه). */
+function guardianTrust(req: express.Request, user: { role?: string } | null | undefined): void {
+  try { if (user?.role === "owner") { securitySentinel.trust(requestIdentity(req), Date.now()); guardianDirty = true; } } catch { /* */ }
+}
+
+/** الدوال الحقيقية نفسها التي يستعملها الخادم — الكناري يهاجمها. */
+function guardDeps(): GuardDeps {
+  return {
+    requiresApproval: (m) => requiresApproval(m),
+    normalizeSendMode: (r) => normalizeCommercialSendMode(r as any),
+    analyzeClaims: (t) => analyzeBusinessClaims(t, buildBusinessFacts({})),
+    sanitizeUntrusted: (t) => sanitizeUntrustedText(t),
+    untrustedCloseTag: UNTRUSTED_CLOSE_TAG,
+    isBlockedSourcePath: (p) => isBlockedSourceRequest(p),
+    enforcePromptLimit: (p) => enforcePromptLimit(p, DEFAULT_MAX_PROMPT_CHARS),
+    classifyScanner: (p, raw) => classifyRequest({ path: p, rawUrl: raw }),
+    sessionSecretSource: () => SESSION_SECRET_SOURCE,
+    sessionSecretLength: () => SESSION_SECRET_SOURCE === "SESSION_SECRET" ? SESSION_SECRET_VALUE.length : SESSION_SECRET_SOURCE === "PLATFORM_TOKEN_ENCRYPTION_KEY" ? String(process.env.PLATFORM_TOKEN_ENCRYPTION_KEY || "").trim().length : 64,
+  };
+}
+function runGuardRound(): GuardRound {
+  const prevFailed = new Set((guardRound?.results || []).filter((r) => !r.ok).map((r) => r.id));
+  const round = runGuardCanary(guardDeps(), Date.now());
+  guardRound = round;
+  for (const r of round.results) {
+    if (!r.ok) console.error(guardFailureLine(r)); // ⇒ سجل الأعطال (قاعدة guard:<id>)
+    else if (prevFailed.has(r.id)) console.log(`[guard-canary] outcome=recovered guard=${r.id}`);
+  }
+  const fresh = round.results.filter((r) => !r.ok && !prevFailed.has(r.id));
+  if (fresh.length) liveEvent({ module: "gate", level: "error", title: `🛡 حارس لا يحمي: ${fresh.map((r) => r.label).join("، ")}`.slice(0, 120), text: "عطل حرج — أُحيل للإصلاح والمهندس يعيد الاختبار" });
+  return round;
+}
+
+async function edgeHttp(url: string): Promise<EdgeHttpResult> {
+  const t0 = Date.now();
+  const ac = new AbortController();
+  const to = setTimeout(() => ac.abort(), EDGE_POLICY.timeoutMs);
+  try {
+    const r = await fetch(url, { signal: ac.signal, redirect: "manual", headers: { "user-agent": "gharabi-engineer-edge-probe/1" } });
+    const headers: Record<string, string> = {};
+    r.headers.forEach((v, k) => { headers[k] = v; });
+    try { await r.arrayBuffer(); } catch { /* */ }
+    return { status: r.status, ms: Date.now() - t0, headers };
+  } catch (e: any) {
+    return { status: 0, ms: Date.now() - t0, headers: {}, error: String(e?.cause?.code || e?.name || e?.message || e).slice(0, 80) };
+  } finally { clearTimeout(to); }
+}
+function edgeTls(host: string): Promise<EdgeTlsResult> {
+  return new Promise((resolve) => {
+    let done = false;
+    let sock: tls.TLSSocket | null = null;
+    const finish = (r: EdgeTlsResult) => { if (done) return; done = true; try { sock?.destroy(); } catch { /* */ } resolve(r); };
+    try {
+      sock = tls.connect({ host, port: 443, servername: host, rejectUnauthorized: false, timeout: 10000 }, () => {
+        const c: any = sock?.getPeerCertificate();
+        finish({ validTo: c?.valid_to ? new Date(c.valid_to).toISOString() : null, issuer: c?.issuer?.O || c?.issuer?.CN || null });
+      });
+      sock.on("error", (e) => finish({ validTo: null, issuer: null, error: String(e?.message || e).slice(0, 80) }));
+      sock.on("timeout", () => finish({ validTo: null, issuer: null, error: "timeout" }));
+    } catch (e: any) { finish({ validTo: null, issuer: null, error: String(e?.message || e).slice(0, 80) }); }
+  });
+}
+function edgeTargetList() {
+  const renderUrl = process.env.RENDER_EXTERNAL_URL || (process.env.RENDER_EXTERNAL_HOSTNAME ? `https://${process.env.RENDER_EXTERNAL_HOSTNAME}` : null);
+  return edgeTargets(publicBaseUrlNow(), renderUrl);
+}
+/** يصل إلى الموقع من الإنترنت كما يفعل الزائر (بلا جلسة) عبر كل عنوان عام، ويقرأ الشهادات. */
+async function runEdgeRound(): Promise<EdgeRound | null> {
+  if (edgeRunning) return edgeLast;
+  edgeRunning = true;
+  try {
+    const targets = edgeTargetList();
+    if (!targets.length) return (edgeLast = null);
+    const results = [];
+    for (const t of targets) {
+      const [http, cert] = await Promise.all([edgeHttp(`${t.baseUrl}/api/health`), edgeTls(hostOf(t.baseUrl))]);
+      results.push(judgeEdge(t, http, cert, Date.now()));
+    }
+    edgeLast = edgeRound(results, Date.now());
+    for (const r of results) { const line = edgeFailureLine(r); if (line) console.warn(line); }
+    return edgeLast;
+  } finally { edgeRunning = false; }
+}
+
+/** حجم الخزن الحقيقي (قراءة فقط) — يُؤجَّل عند ضغط الخطة الحرج كي لا يوقظ القاعدة بلا داعٍ. */
+async function runStorageSize(): Promise<void> {
+  if (!storageReady || typeof storageAdapter.sizeReport !== "function") return;
+  try { if (currentUsagePressure().deferNonCritical) return; } catch { /* */ }
+  const r = await storageAdapter.sizeReport();
+  if (!r || r.databaseBytes == null) return;
+  const nowMs = Date.now();
+  dbSamples.push({ t: nowMs, v: r.databaseBytes });
+  dbSamples = dbSamples.filter((x) => nowMs - x.t <= 14 * 86400000).slice(-60);
+  guardianDirty = true;
+  storageSizeLast = { at: new Date(nowMs).toISOString(), backend: String(storageAdapter.backend), databaseBytes: r.databaseBytes, keys: r.keys, growthPerDay: bytesGrowthPerDay(dbSamples[0] || null, dbSamples[dbSamples.length - 1]) };
+}
+function storageVerdictNow() {
+  if (!storageSizeLast) return null;
+  if (storageSizeLast.backend !== "postgres") return { status: "skip" as const, percent: null, daysToFull: null, detail: `ملفات الحالة ${((storageSizeLast.databaseBytes || 0) / 1048576).toFixed(1)} ميغا (تخزين ملفات، بلا سقف خطة)`, advice: null };
+  return judgeStorage(storageSizeLast, FREE_TIER_QUOTAS.neonStorageBytes, storageSizeLast.growthPerDay);
+}
+function freePlanQuotas(ext: { geminiUsed: number; geminiLimit: number; youtubePercent: number | null }): PlanQuota[] {
+  const out: PlanQuota[] = [];
+  let sig: Array<{ usedPercent: number | null; provider?: string }> = [];
+  try { sig = usagePressureSignals(); } catch { /* */ }
+  for (const x of sig) { const meta = PLAN_LABELS[String(x.provider)]; if (meta) out.push({ provider: String(x.provider), label: meta.label, period: meta.period, usedPercent: x.usedPercent }); }
+  if (ext.geminiLimit > 0) out.push({ provider: "gemini", label: PLAN_LABELS.gemini.label, period: "day", usedPercent: (ext.geminiUsed / ext.geminiLimit) * 100 });
+  if (ext.youtubePercent != null) out.push({ provider: "youtube", label: PLAN_LABELS.youtube.label, period: "day", usedPercent: ext.youtubePercent });
+  const sv = storageVerdictNow();
+  if (sv && sv.percent != null) out.push({ provider: "neonStorage", label: PLAN_LABELS.neonStorage.label, period: "capacity", usedPercent: sv.percent });
+  return out;
+}
+/** حقائق الحارس للدورية (اختيارية في PatrolFacts). */
+function guardianFacts(nowMs: number, ext: { geminiUsed: number; geminiLimit: number; youtubePercent: number | null }): Pick<PatrolFacts, "security" | "guards" | "edge" | "plans" | "storageSize" | "deps"> {
+  const s = securitySentinel.summary(nowMs);
+  const plans = judgePlans(freePlanQuotas(ext), nowMs);
+  const worstEdge = edgeLast ? edgeLast.results.find((r) => r.verdict === edgeLast!.worst) || null : null;
+  const sv = storageVerdictNow();
+  return {
+    security: { level: s.level, activeBlocks: s.activeBlocks.length, last24h: s.last24h as Record<string, number>, forgedWebhooks1h: s.forgedWebhooks1h, lastHourScore: s.lastHourScore },
+    guards: guardRound ? { total: guardRound.total, failed: guardRound.failed, failedLabels: guardRound.results.filter((r) => !r.ok).map((r) => r.label), ageMin: Math.round((nowMs - Date.parse(guardRound.at)) / 60000) } : null,
+    edge: edgeLast ? { worst: edgeLast.worst, details: edgeLast.results.map((r) => r.detail), remedy: worstEdge ? edgeRemedy(worstEdge.verdict, worstEdge.id) || null : null, ageMin: Math.round((nowMs - Date.parse(edgeLast.at)) / 60000) } : null,
+    plans: { status: plans.status, details: plans.verdicts.filter((v) => v.status !== "skip").map((v) => v.detail), worstDetail: plans.worst?.detail || "" },
+    storageSize: sv ? { status: sv.status, detail: sv.detail, advice: sv.advice } : null,
+    deps: depAudit ? { ok: depAudit.ok, at: depAudit.at, critical: depAudit.counts.critical, high: depAudit.counts.high, moderate: depAudit.counts.moderate, top: depAudit.packages.filter((x) => x.severity === "critical" || x.severity === "high").slice(0, 4).map((x) => `${x.name}${x.fixAvailable ? " (له إصلاح)" : ""}`), error: depAudit.error } : null,
+  };
+}
+/** عرض الحارس لغرفة المهندس (عناوين مقنّعة فقط، بلا أسرار). */
+function guardianView(full = true) {
+  const nowMs = Date.now();
+  const sec = securitySentinel.summary(nowMs);
+  const g: any = (() => { try { return geminiStatus(); } catch { return {}; } })();
+  const yq: any = (() => { try { return youtubeQuotaStatusSnapshot(); } catch { return null; } })();
+  const plans = judgePlans(freePlanQuotas({ geminiUsed: Number(g?.usedToday || 0), geminiLimit: Number(g?.dailyGuard || 0), youtubePercent: yq && typeof yq.usedPercent === "number" ? yq.usedPercent : null }), nowMs);
+  return {
+    security: full ? sec : { ...sec, recent: sec.recent.slice(0, 6), topSources: sec.topSources.slice(0, 3) },
+    sight: { ...sentinelSight, seesVisitors: sentinelSight.direct + sentinelSight.proxied > 0 },
+    policy: { blockScore: SENTINEL_POLICY.blockScore, windowMin: SENTINEL_POLICY.windowMs / 60000, baseBlockMin: SENTINEL_POLICY.baseBlockMs / 60000, maxBlockHours: SENTINEL_POLICY.maxBlockMs / 3600000 },
+    guards: guardRound ? { ...guardRound, catalog: GUARD_PROBES.length } : null,
+    edge: edgeLast ? { ...edgeLast, results: edgeLast.results.map((r) => ({ ...r, remedy: r.verdict === "ok" ? null : edgeRemedy(r.verdict, r.id) })) } : null,
+    edgeConfigured: edgeTargetList().map((t) => ({ id: t.id, label: t.label, host: hostOf(t.baseUrl) })),
+    plans: { status: plans.status, verdicts: plans.verdicts },
+    storage: storageSizeLast ? { ...storageSizeLast, verdict: storageVerdictNow() } : null,
+    dependencies: depAudit,
+  };
+}
+function startGuardian(): void {
+  if (guardianTimers.length) return;
+  const once = (fn: () => unknown, ms: number) => { const t = setTimeout(() => { try { void fn(); } catch { /* */ } }, ms); (t as any).unref?.(); };
+  const every = (fn: () => unknown, ms: number) => { const t = setInterval(() => { try { void Promise.resolve(fn()).catch(() => undefined); } catch { /* */ } }, ms); (t as any).unref?.(); guardianTimers.push(t); };
+  once(() => runGuardRound(), GUARDIAN_POLICY.firstCanaryMs);
+  every(() => runGuardRound(), GUARDIAN_POLICY.canaryMs);
+  once(() => runEdgeRound().catch(() => undefined), GUARDIAN_POLICY.firstEdgeMs);
+  every(() => runEdgeRound(), EDGE_POLICY.intervalMs);
+  once(() => runStorageSize().catch(() => undefined), GUARDIAN_POLICY.firstStorageMs);
+  every(() => runStorageSize(), GUARDIAN_POLICY.storageMs);
+  every(() => { persistGuardian(); try { maybeSecurityAlert(Date.now(), false); } catch { /* */ } }, 5 * 60000);
+  console.log("[الغرابي AI] Engineer guardian armed: security sentinel, guard canary 30 min, edge probe 15 min, storage size 6 h");
+}
+
+app.get("/api/engineer/guardian", requireOwner, (_req, res) => {
+  res.json({ success: true, guardian: guardianView(true) });
+});
+/** «افحص الآن»: كناري الحرّاس + الحافة + حجم الخزن فوراً (قراءة فقط). */
+app.post("/api/engineer/guardian/run", requireOwner, async (req, res) => {
+  const user = (req as any).user as ServerUser;
+  runGuardRound();
+  await Promise.all([runEdgeRound().catch(() => null), runStorageSize().catch(() => undefined)]);
+  audit(user.id, "engineer_guardian_run", "manual");
+  res.json({ success: true, guardian: guardianView(true) });
+});
+/** قرار المالك: رفع كل الحظر المؤقت (لا يمسّ الرصد). */
+app.post("/api/engineer/guardian/unblock", requireOwner, (req, res) => {
+  const user = (req as any).user as ServerUser;
+  const n = securitySentinel.unblockAll(Date.now());
+  guardianDirty = true; persistGuardian(true);
+  audit(user.id, "engineer_guardian_unblock", `${n}`);
+  res.json({ success: true, unblocked: n, guardian: guardianView(true) });
+});
+
 function startSiteEngineer(): void {
   if (engineerTimer) return;
   // يبدأ بعد 3 دقائق من الإقلاع (تستقر الدورات أولاً)، ثم فحص كل دقيقة. `.unref()`.
@@ -16051,6 +16367,7 @@ function startSiteEngineer(): void {
   console.log("[الغرابي AI] Site engineer scheduled every 1 min (repair-only, owner decisions respected)");
   startEngineerPatrol();
   startProactiveEngineer();
+  startGuardian();
 }
 
 /** عرض المهندس للغرفة الحية (بلا أسرار). */
@@ -16068,6 +16385,8 @@ function engineerView(full = true) {
     // الأعطال الحقيقية المرصودة (500/استثناء/انهيار شاشة/رفض مزوّد/بطء) — هي ما يهم فعلاً.
     defects: (() => { try { return { summary: ledgerSummary(defectLedger), open: openDefects(defectLedger).slice(0, full ? 40 : 12), repaired: recentlyRepaired(defectLedger, Date.now()).slice(0, 10), closed: engineerClosures(Date.now()).slice(0, 25), version: DEFECT_VERSION }; } catch { return null; } })(),
     proactive: (() => { try { return proactiveView(full); } catch { return null; } })(),
+    // الحارس: الأمن + الحرّاس + الحافة + الخطط المجانية + الخزن.
+    guardian: (() => { try { return guardianView(full); } catch { return null; } })(),
   };
 }
 
@@ -16175,6 +16494,9 @@ function notificationCauseCleared(n: any): boolean {
       const match = checks.filter((c: any) => c?.label && title.includes(String(c.label)));
       return match.length > 0 && match.every((c: any) => c.status === "ok");
     }
+    case "security_alert":
+      // الإنذار الأمني يزول حين يهدأ الحارس: لا محاولة جديدة بعده ولا حظر قائم.
+      return securitySentinel.quietSince(created, Date.now());
     case "database_stale":
     case "backup_failed": {
       const f = backupFreshness(drControl.driveAutoBackup, Date.now());
@@ -18219,6 +18541,7 @@ async function bootstrapStorage(): Promise<void> {
       // المهندس المشرف: تقاريره وذاكرة محاولاته تصمد بعد restart.
       await loadEngineerState();
       await loadDefectLedger();
+      await loadGuardianState();
     } catch (error: any) {
       storageInitError = String(error?.code || error?.name || "state_read_failed").slice(0, 60);
       return;

@@ -2905,7 +2905,7 @@ add('env-vars-documented', (() => {
   const documented = new Set([...envExample.matchAll(/^([A-Z][A-Z0-9_]+)=/gm)].map((m) => m[1]));
   const used = new Set([...server.matchAll(/process\.env\.([A-Z][A-Z0-9_]+)/g)].map((m) => m[1]));
   // أسماء تُحقنها المنصّة تلقائياً (Render/Netlify/Lambda) أو أدوات تشخيص، لا تُوثَّق.
-  const platformInjected = new Set(['NODE_ENV', 'PORT', 'NETLIFY', 'RENDER', 'LAMBDA_TASK_ROOT', 'AWS_LAMBDA_FUNCTION_NAME', 'RENDER_GIT_COMMIT', 'RENDER_GIT_BRANCH', 'GIT_COMMIT', 'GIT_BRANCH']);
+  const platformInjected = new Set(['NODE_ENV', 'PORT', 'NETLIFY', 'RENDER', 'LAMBDA_TASK_ROOT', 'AWS_LAMBDA_FUNCTION_NAME', 'RENDER_GIT_COMMIT', 'RENDER_GIT_BRANCH', 'GIT_COMMIT', 'GIT_BRANCH', 'RENDER_EXTERNAL_URL', 'RENDER_EXTERNAL_HOSTNAME']);
   const missing = [...used].filter((v) => !documented.has(v) && !platformInjected.has(v));
   return missing.length === 0;
 })(), 'Phase 5: كل متغيّر بيئة يقرأه server.ts موثّق في .env.example (عدا المُحقَن من المنصّة)');

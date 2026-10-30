@@ -3,6 +3,7 @@ import { apiService } from '../../services/api';
 import { useApp } from '../../context/AppContext';
 import { LiveAlertStrip, LiveControlCenter } from './LiveControlCenter';
 import { SpiderPatrol, SPIDER_CSS } from './SpiderPatrol';
+import { GuardianPanel } from './GuardianPanel';
 import { getSoundtrack, SOUND_MODES, type SoundMode, type SoundState, type PingLevel } from './liveSoundtrack';
 
 /**
@@ -717,7 +718,15 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
   // ويعرض نتيجة الفحص الحقيقية لذلك القسم.
   const patrol: any = eng?.patrol || null;
   const patrolMod = (k: string) => patrol?.modules?.[k] || null;
-  const [patrolTab, setPatrolTab] = useState<'defects' | 'proactive' | 'gaps' | 'reports' | 'sections'>('defects');
+  const [patrolTab, setPatrolTab] = useState<'defects' | 'proactive' | 'guard' | 'gaps' | 'reports' | 'sections'>('defects');
+  const guardian: any = eng?.guardian || null;
+  const guardianAlerts = (guardian?.guards?.failed || 0) + ((guardian?.security?.activeBlocks || []).length) + (guardian?.edge && !['ok', 'slow'].includes(guardian.edge.worst) ? 1 : 0);
+  const guardianAct = async (kind: 'run' | 'unblock') => {
+    setEngBusy(true);
+    try { const r = kind === 'run' ? await apiService.runEngineerGuardian() : await apiService.unblockEngineerGuardian(); showToast(kind === 'run' ? 'اكتمل فحص الحارس: الحرّاس والوصول من الإنترنت والخزن' : `رُفع الحظر عن ${r?.unblocked ?? 0} مصدراً`); void poll(); }
+    catch (e: any) { showToast(e?.message || 'تعذّر تنفيذ الطلب'); }
+    finally { setEngBusy(false); }
+  };
   const pro: any = eng?.proactive || null;
   const defects: any = eng?.defects || null;
   const engDefect = async (fp: string, action: 'resolved' | 'ignored') => {
@@ -1215,7 +1224,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
                     </div>
                   </div>
                   <div style={{ display: 'flex', gap: 6, margin: '6px 0' }}>
-                    {([['defects', `الأعطال الحقيقية (${defects?.summary?.open ?? 0})`], ['proactive', `الاستباقي (${(pro?.forecasts || []).length + (pro?.lastRound?.failed || 0)})`], ['gaps', `ثغرات الإعداد (${(patrol?.gaps || []).length})`], ['reports', `التقارير (${(eng.reports || []).length})`], ['sections', 'تفاصيل القسم']] as const).map(([k, t]) => (
+                    {([['defects', `الأعطال الحقيقية (${defects?.summary?.open ?? 0})`], ['proactive', `الاستباقي (${(pro?.forecasts || []).length + (pro?.lastRound?.failed || 0)})`], ['guard', `🛡 الحارس${guardianAlerts ? ` (${guardianAlerts})` : ''}`], ['gaps', `ثغرات الإعداد (${(patrol?.gaps || []).length})`], ['reports', `التقارير (${(eng.reports || []).length})`], ['sections', 'تفاصيل القسم']] as const).map(([k, t]) => (
                       <button key={k} type="button" className={'lbr-tab' + (patrolTab === k ? ' on' : '')} onClick={() => setPatrolTab(k)}>{t}</button>
                     ))}
                   </div>
@@ -1255,6 +1264,7 @@ export const LiveBrainRoom: React.FC<{ variant?: 'page' | 'wall'; onClose?: () =
                           );
                         })
                     )}
+                    {patrolTab === 'guard' && <GuardianPanel g={guardian} now={now} busy={engBusy} onRun={() => void guardianAct('run')} onUnblock={() => void guardianAct('unblock')} />}
                     {patrolTab === 'proactive' && (
                       <div aria-label="الفحص الاستباقي والتوقعات" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                         <div style={{ fontSize: 11.5, color: '#C9D3EA', lineHeight: 1.7 }}>
