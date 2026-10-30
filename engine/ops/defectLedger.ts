@@ -653,6 +653,12 @@ export type RepairPlan =
   | { action: 'verify_edge'; target: string }
   /** إذن قياس ناقص: التحقق هل النطاق مطلوب أصلاً في الإعداد، وهل مُنح بعد إعادة الربط. */
   | { action: 'verify_scope_setup'; platform: string; scope: string }
+  /** النسخ الاحتياطي كان بطيئاً: المهندس يقيس أول نسخة بعد آخر ظهور ويغلقه إن صارت تحت الحد. */
+  | { action: 'verify_backup_speed' }
+  /** مسار قراءة كان بطيئاً: المهندس يعيد الطلب نفسه ويقيس زمنه. */
+  | { action: 'verify_route_speed'; path: string }
+  /** ينتظر قياساً حقيقياً قادماً (النسخة المجدولة التالية…) — يراقب ويتحقق متى وقع، بلا عمل ثقيل إضافي. */
+  | { action: 'await_measure'; detail: string }
   /** لا إصلاح آلي ممكن: إعداد/ربط بيد المالك (يُذكر الإجراء بالضبط). */
   | { action: 'owner'; instructions: string }
   /** عيب في الكود نفسه: يُصلحه مهندس الكود (تعديل + اختبار + طلب دمج). */
@@ -681,9 +687,40 @@ export function repairPlanFor(g: Pick<DefectGroup, 'kind' | 'owner' | 'rule' | '
   }
   if (rule.startsWith('metrics:')) return { action: 'rerun_metrics', platform: rule.slice('metrics:'.length) || null };
   if (rule === 'backup-failed') return { action: 'rerun_backup' };
+  // البطء ليس «لا شيء أفعله»: المهندس يقيس بنفسه هل زال (بعد إصلاح كود نُشر أو زوال ضغط عابر) ويغلقه بتقرير.
+  if (rule === 'backup-slow') return { action: 'verify_backup_speed' };
+  if (rule.startsWith('slow:') && getPath) return { action: 'verify_route_speed', path: getPath };
   if (rule === 'persist') return { action: 'retry_persist' };
   if (g.owner === 'owner') return { action: 'owner', instructions: g.fix };
   return { action: 'developer' };
+}
+
+/**
+ * حكم سرعة النسخ الاحتياطي (2026-10-30): كان «النسخ الاحتياطي بطيء جداً» يبقى مفتوحاً بانتظار مهندس الكود
+ * حتى بعد نشر الإصلاح ونجاح نسخ سريعة بعده. الآن المهندس يقرأ آخر دورة **بعد** آخر ظهور للعطل:
+ * - نجحت وتحت الحد ⇒ `fixed` (يغلقه «أصلحه المهندس» بالقياس الحقيقي).
+ * - لم تقع دورة بعده ⇒ `await_next` (لا يُشغّل نسخة ثقيلة إضافية — ينتظر المجدولة ويتحقق منها).
+ * - فشلت ⇒ `await_next` (فشل النسخ له عطله وخطته المستقلة).
+ * الدورة البطيئة نفسها تحدّث آخر ظهور، فلا يمكن أن تُحسب «بعده».
+ */
+export function backupSpeedVerdict(input: {
+  state: { lastRunAt?: string | null; lastRunStartedAtMs?: number | null; lastRunResult?: string | null } | null | undefined;
+  defectLastAt: string; ok: (result: string | null | undefined) => boolean; thresholdMs?: number;
+}): { verdict: 'fixed' | 'await_next'; durationMs: number | null; detail: string } {
+  const threshold = input.thresholdMs ?? LEDGER_POLICY.slowBackupMs;
+  const s = input.state || {};
+  const endMs = s.lastRunAt ? Date.parse(s.lastRunAt) : NaN;
+  const startMs = Number(s.lastRunStartedAtMs);
+  const dur = Number.isFinite(endMs) && Number.isFinite(startMs) && endMs >= startMs ? endMs - startMs : null;
+  const lastMs = Date.parse(input.defectLastAt);
+  const mins = (ms: number) => Math.max(1, Math.round(ms / 60000));
+  if (!Number.isFinite(endMs) || !Number.isFinite(lastMs) || endMs <= lastMs + 60000) {
+    return { verdict: 'await_next', durationMs: dur, detail: 'لم تكتمل نسخة بعد آخر ظهور — أتحقق من النسخة المجدولة التالية دون تشغيل نسخة إضافية' };
+  }
+  if (!input.ok(s.lastRunResult)) return { verdict: 'await_next', durationMs: dur, detail: 'آخر نسخة فشلت — يتولاها مسار «فشل النسخ»، وأقيس السرعة عند أول نسخة ناجحة' };
+  if (dur == null) return { verdict: 'await_next', durationMs: null, detail: 'زمن آخر نسخة غير مسجّل — أقيس النسخة التالية' };
+  if (dur >= threshold) return { verdict: 'await_next', durationMs: dur, detail: `آخر نسخة استغرقت ${mins(dur)} د (الحد ${mins(threshold)} د)` };
+  return { verdict: 'fixed', durationMs: dur, detail: `أول نسخة بعد آخر ظهور (${s.lastRunAt}) اكتملت في ${mins(dur)} د — تحت الحد ${mins(threshold)} د` };
 }
 
 /** يسجّل نتيجة محاولة إصلاح على العطل نفسه؛ النجاح المتحقَّق يغلقه «أصلحه المهندس». */

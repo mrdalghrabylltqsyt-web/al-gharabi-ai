@@ -724,7 +724,7 @@ import {
 import { driveApiAccountingSnapshot, recordDriveApiCall, type DriveApiCallKind } from "./engine/dr/driveApiAccounting";
 import { neonUsageApiConfig, fetchNeonActualUsage, NEON_USAGE_POLL_MIN_INTERVAL_MS, computeCuHours } from "./engine/ops/neonUsage";
 import { buildSalesReadiness, sanitizeOAuthFailureMessage, type ReadinessPlatformInput } from "./engine/ops/salesReadiness";
-import { backupFreshness, resolveAutoBackupIntervalMs } from "./engine/dr/autoBackup";
+import { backupFreshness, resolveAutoBackupIntervalMs, isSuccessfulBackupResult } from "./engine/dr/autoBackup";
 import { summarizePublishHealth, formatPublishLogLine } from "./engine/ops/publishHealth";
 import { realProductPhrases } from "./src/utils/productPhrases";
 import { LiveEventBuffer, classifyLogLine, auditToLiveEvent, buildLiveModules, buildLiveInsights, buildLiveCycles, platformAr, type LiveEventInput } from "./engine/ops/liveRoom";
@@ -736,7 +736,7 @@ import { edgeTargets, judgeEdge, edgeRound, edgeFailureLine, edgeRemedy, EDGE_PO
 import { judgePlans, judgeStorage, bytesGrowthPerDay, PLAN_LABELS, type PlanQuota, type StorageSizeReport } from "./engine/ops/resourceWatch";
 import { judgePace, pacedAllows, paceAllowedPercent, catchUpInMs, type PacePeriod } from "./engine/ops/quotaPacing";
 import tls from "tls";
-import { recordFailure, sweepLedger, markDefect, openDefects, ledgerSummary, normalizeLedger, emptyLedger, defectLogLine, repairPlanFor, recordRepair, recentlyRepaired, countsAsRegression, isDeployOverlapCrash, normalizeRoute, LEDGER_POLICY, type DefectLedger, type FailureEvent, type RepairPlan } from "./engine/ops/defectLedger";
+import { recordFailure, sweepLedger, markDefect, openDefects, ledgerSummary, normalizeLedger, emptyLedger, defectLogLine, repairPlanFor, backupSpeedVerdict, recordRepair, recentlyRepaired, countsAsRegression, isDeployOverlapCrash, normalizeRoute, LEDGER_POLICY, type DefectLedger, type FailureEvent, type RepairPlan } from "./engine/ops/defectLedger";
 import { TOKEN_KEEPER_POLICY, isPermanentRefreshError, backoffMs, decideRenewal, ownerTokenNeeds, autoRenewable, shouldMarkReauth, keeperSummary, leadFor, fmtDur, type TokenState, type RenewalKind, type KeeperRun } from "./engine/ops/tokenKeeper";
 import { PROBE_ROUTES, PROACTIVE_POLICY, evaluateProbe, summarizeRound, deployVerdict, RouteLatency, slowRoutes, isSpiking, buildForecasts, notificationHygiene, type ProbeRound, type Forecast } from "./engine/ops/engineerProactive";
 import { buildOwnIdentity, customerVoices, type OwnIdentity } from "./engine/social/ownVoice";
@@ -15595,11 +15595,31 @@ async function engineerReplayGet(path: string, opts: { audit?: boolean } = {}): 
   }
 }
 
+/**
+ * الخطة الفعلية الآن (2026-10-30): خطة القاعدة + الحالة الحية. البطء يُقاس لا يُحال: نسخة احتياطية بطيئة
+ * تُغلق بقياس أول نسخة بعدها، ومسار بطيء يُعاد ويُقاس؛ وما لم يقع قياسه بعد ينتظر بلا عمل ثقيل إضافي.
+ */
+const engineerSlowMeasured = new Map<string, { atMs: number; detail: string }>();
+function effectiveRepairPlan(g: DefectLedger["groups"][string]): RepairPlan {
+  const plan = repairPlanFor(g);
+  if (plan.action === "verify_backup_speed") {
+    const v = backupSpeedVerdict({ state: drControl.driveAutoBackup, defectLastAt: g.lastAt, ok: (r) => isSuccessfulBackupResult(r as any) });
+    if (v.verdict === "fixed") return plan;
+    return { action: "await_measure", detail: v.detail };
+  }
+  if (plan.action === "verify_route_speed") {
+    // قاسه المهندس بعد آخر ظهور فبقي بطيئاً ⇒ عيب كود حقيقي لمهندس الكود، لا إعادة طلبات متكررة.
+    const m = engineerSlowMeasured.get(g.fp);
+    if (m && m.atMs > Date.parse(g.lastAt) && Date.now() - m.atMs < 6 * 3600000) return { action: "developer" };
+  }
+  return plan;
+}
+
 /** خطة إصلاح عطل من سجل الأعطال: خطوات حقيقية + تحقق حقيقي (engine/ops/defectLedger.ts → repairPlanFor). */
 function defectRepairPlaybook(fp: string): EngineerPlan | null {
   const g = defectLedger.groups[fp];
   if (!g) return null;
-  const plan: RepairPlan = repairPlanFor(g);
+  const plan: RepairPlan = effectiveRepairPlan(g);
   let last: { ok: boolean; detail: string } = { ok: false, detail: "لم يُنفَّذ" };
   const keep = (r: { ok: boolean; detail: string }) => { last = r; return r; };
   switch (plan.action) {
@@ -15675,6 +15695,24 @@ function defectRepairPlaybook(fp: string): EngineerPlan | null {
         const other = r?.results.find((y) => y.id !== plan.target);
         const where = !good && other ? (other.verdict === "ok" || other.verdict === "slow" ? ` — ${other.label} سليم، فالعطل في طريق ${x.label} لا في الخادم` : ` — ${other.label} معطّل أيضاً، فالعطل في الخادم نفسه`) : "";
         return keep({ ok: good, detail: good ? `يُفتح الآن من الإنترنت: ${x.detail}` : `${x.detail}${where}. ${edgeRemedy(x.verdict, x.id)}` });
+      } }],
+      verify: () => last,
+    };
+    case "verify_backup_speed": return {
+      steps: [{ label: "قياس زمن أول نسخة احتياطية بعد آخر ظهور للبطء", run: async () => {
+        const v = backupSpeedVerdict({ state: drControl.driveAutoBackup, defectLastAt: g.lastAt, ok: (r) => isSuccessfulBackupResult(r as any) });
+        return keep({ ok: v.verdict === "fixed", detail: v.detail });
+      } }],
+      verify: () => last,
+    };
+    case "verify_route_speed": return {
+      steps: [{ label: `إعادة الطلب البطيء وقياس زمنه (${plan.path})`, timeoutMs: 60000, run: async () => {
+        const r = await engineerReplayGet(plan.path);
+        const limit = LEDGER_POLICY.slowRequestMs;
+        const fast = r.ok && r.ms < limit;
+        const detail = `${r.detail} في ${(r.ms / 1000).toFixed(1)} ث (الحد ${Math.round(limit / 1000)} ث)`;
+        if (!fast && r.ok) engineerSlowMeasured.set(fp, { atMs: Date.now(), detail });
+        return keep({ ok: fast, detail: fast ? `${detail} — المسار سريع الآن` : `${detail} — ما زال بطيئاً: عيب كود لمهندس الكود` });
       } }],
       verify: () => last,
     };
@@ -15844,7 +15882,7 @@ async function engineerTick(trigger: "schedule" | "manual" = "schedule"): Promis
     // صيانة سجل الأعطال: ما غاب طويلاً (أو أُصلح بنسخة جديدة) يُعلَّم محلولاً.
     try { if (sweepLedger(defectLedger, { nowMs, version: DEFECT_VERSION, versionSinceMs: DEFECT_BOOT_MS }).length) scheduleDefectPersist(); } catch { /* تجاهل */ }
     // الأعطال الحقيقية المرصودة تدخل قائمة مهام المهندس: يُصلح ما له إصلاح، ويُحيل الباقي لمالكه.
-    const defectIncidents = (() => { try { return incidentsFromDefects(openDefects(defectLedger).map((g) => ({ fp: g.fp, kind: g.kind, severity: g.severity, title: g.title, samples: g.samples, plan: repairPlanFor(g) as any }))); } catch { return []; } })();
+    const defectIncidents = (() => { try { return incidentsFromDefects(openDefects(defectLedger).map((g) => ({ fp: g.fp, kind: g.kind, severity: g.severity, title: g.title, samples: g.samples, plan: effectiveRepairPlan(g) as any }))); } catch { return []; } })();
     const incidents = [...detectIncidents(engineerSnapshot(), engineerStreaks), ...incidentsFromPatrol(Object.values(patrolInspections).flatMap((m) => m.checks)), ...defectIncidents];
     engineerActiveIncidents = incidents;
     // بروتوكول الإغلاق: كل حادثة تُتذكَّر بعنوانها، وما زال منها يُغلق بتقرير ✅ (أصلحتُه / زال بعد إجراء
@@ -15866,7 +15904,14 @@ async function engineerTick(trigger: "schedule" | "manual" = "schedule"): Promis
     else if (d.kind === "escalate") engineerEscalate(d.incident, [{ at: new Date().toISOString(), label: "التشخيص", ok: true, detail: d.incident.evidence.join(" · ") }], d.reason, Date.now());
     else if (d.kind === "observe") {
       const mem = engineerMem(d.incident.key); mem.lastAttemptAt = nowMs;
-      if (d.incident.kind === "defect_fix") {
+      const awaiting = (() => { try { const g = defectLedger.groups[String(d.incident.target)]; const p = g ? effectiveRepairPlan(g) : null; return p?.action === "await_measure" ? p.detail : null; } catch { return null; } })();
+      if (d.incident.kind === "defect_fix" && awaiting) {
+        // ينتظر قياساً حقيقياً قادماً — لا إحالة ولا عمل ثقيل؛ يُعاد النظر كل ساعة ويُغلق بالقياس.
+        const steps = [{ at: new Date().toISOString(), label: "التشخيص", ok: true, detail: d.incident.evidence.join(" · ").slice(0, 200) }, { at: new Date().toISOString(), label: "انتظار القياس", ok: true, detail: awaiting }];
+        const sameWait = defectLedger.groups[String(d.incident.target)]?.repair?.summary === `بانتظار القياس: ${awaiting}`;
+        if (!sameWait) addReport(engineerState, engineerReport(d.incident, { status: "monitoring", steps, verification: awaiting, summary: `«${d.incident.title}»: ${awaiting}. أغلقه بنفسي بالقياس فور وقوعه.`, startedMs: nowMs, nextAction: "التحقق عند القياس التالي (كل ساعة)" }));
+        if (!sameWait) defectRepairOutcome(String(d.incident.target), "failed", `بانتظار القياس: ${awaiting}`, steps);
+      } else if (d.incident.kind === "defect_fix") {
         // عيب في الكود نفسه: لا يُصلح بإعادة تشغيل شيء — يُحال لمهندس الكود (تعديل + اختبار + طلب دمج).
         const steps = [{ at: new Date().toISOString(), label: "التشخيص", ok: true, detail: d.incident.evidence.join(" · ").slice(0, 200) }, { at: new Date().toISOString(), label: "الإحالة لمهندس الكود", ok: true, detail: "يقرأ سطر [defect] من السجل ويفتح إصلاحاً في الكود مع اختبار" }];
         addReport(engineerState, engineerReport(d.incident, { status: "monitoring", steps, verification: "عيب برمجي — الإصلاح يكون في الكود لا بإعادة تشغيل", summary: `«${d.incident.title}» عيب في الكود: أحلتُه لمهندس الكود ليصلحه بتعديل واختبار ويرسل لك طلب الدمج.`, startedMs: nowMs, nextAction: "مهندس الكود في دورته القادمة" }));

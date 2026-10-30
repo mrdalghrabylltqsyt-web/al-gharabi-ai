@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import {
   classifyFailure, recordFailure, sweepLedger, markDefect, openDefects, ledgerSummary, normalizeLedger,
   emptyLedger, fingerprint, normalizeRoute, sanitizeSample, defectLogLine, LEDGER_POLICY,
-  repairPlanFor, recordRepair, recentlyRepaired, countsAsRegression, isDeployOverlapCrash,
+  repairPlanFor, recordRepair, recentlyRepaired, countsAsRegression, isDeployOverlapCrash, backupSpeedVerdict,
 } from '../ops/defectLedger';
 import { incidentsFromDefects, decideNext, emptyEngineerState } from '../ops/siteEngineer';
 
@@ -311,6 +311,36 @@ check('★ نطاق اختياري لم يُطلب (setup=) لا يدخل سجل
   check('★ المهندس يغلق كل حادثة زالت بتقرير (closeRecovered)', srv3.includes('closeRecovered(engineerState') && srv3.includes('closureReportAr(c)'));
   check('★ التنبيه الذي زال سببه يُغلق بتقرير ✅ يسمّيه', srv3.includes('h.clearedIds.length') && srv3.includes('تحققتُ وأغلقتُ'));
   check('★ قائمة واحدة لكل ما أغلقه المهندس', srv3.includes('closed: engineerClosures(Date.now())'));
+}
+
+// ---------------------------------------------------------------------------
+// البطء يُقاس ويُغلق بيد المهندس (2026-10-30): «النسخ الاحتياطي بطيء جداً — عاد بعد حله» بقي مفتوحاً
+// بانتظار مهندس الكود رغم نشر الإصلاح (#142) ونجاح نسخ سريعة بعده.
+// ---------------------------------------------------------------------------
+{
+  const L = emptyLedger();
+  const slowAt = NOW;
+  const g = recordFailure(L, log('[dr-backup] outcome=ok state=backed_up trigger=scheduled decision=due recoveryPoint=rp1 ms=629000'), { nowMs: slowAt })!.group;
+  check('★ النسخ البطيء ⇒ المهندس يقيسه (لا إحالة صمّاء لمهندس الكود)', repairPlanFor(g).action === 'verify_backup_speed', repairPlanFor(g).action);
+  const ok = (r: any) => r === 'backed_up' || r === 'ok';
+  const iso = (ms: number) => new Date(ms).toISOString();
+  const before = backupSpeedVerdict({ state: { lastRunAt: iso(slowAt), lastRunStartedAtMs: slowAt - 629000, lastRunResult: 'backed_up' }, defectLastAt: g.lastAt, ok });
+  check('★ الدورة البطيئة نفسها لا تُحسب «بعده» ⇒ ينتظر النسخة التالية بلا تشغيل نسخة إضافية', before.verdict === 'await_next', JSON.stringify(before));
+  const fast = backupSpeedVerdict({ state: { lastRunAt: iso(slowAt + 6 * 3600000), lastRunStartedAtMs: slowAt + 6 * 3600000 - 95000, lastRunResult: 'backed_up' }, defectLastAt: g.lastAt, ok });
+  check('★ نسخة ناجحة سريعة بعده ⇒ fixed بالقياس الحقيقي', fast.verdict === 'fixed' && fast.durationMs === 95000 && /2 د/.test(fast.detail), JSON.stringify(fast));
+  const failed = backupSpeedVerdict({ state: { lastRunAt: iso(slowAt + 6 * 3600000), lastRunStartedAtMs: slowAt + 6 * 3600000 - 5000, lastRunResult: 'failed' }, defectLastAt: g.lastAt, ok });
+  check('نسخة فاشلة بعده لا تُغلق البطء (للفشل خطته)', failed.verdict === 'await_next');
+  check('حالة غائبة ⇒ انتظار لا انهيار', backupSpeedVerdict({ state: null, defectLastAt: g.lastAt, ok }).verdict === 'await_next');
+  const incWait = incidentsFromDefects([{ fp: g.fp, kind: g.kind, severity: g.severity, title: g.title, samples: g.samples, plan: { action: 'await_measure', detail: before.detail } }])[0];
+  check('★ الانتظار يُراجع كل ساعة (لا 72 ساعة) ولا يُزعج المالك', incWait.observeOnly === true && incWait.cooldownMs === 3600000 && !incWait.needsOwner);
+  const incFix = incidentsFromDefects([{ fp: g.fp, kind: g.kind, severity: g.severity, title: g.title, samples: g.samples, plan: { action: 'verify_backup_speed' } }])[0];
+  check('★ حين يتوفر القياس ⇒ مهمة إصلاح حقيقية تُغلق «أصلحه المهندس»', !incFix.observeOnly && !incFix.needsOwner);
+  const slowGet = recordFailure(L, { source: 'http', text: 'slow', durationMs: 22000, where: '/api/live/room', method: 'GET', path: '/api/live/room?lite=1' }, { nowMs: NOW })!.group;
+  check('★ مسار قراءة بطيء ⇒ المهندس يعيده ويقيس زمنه', repairPlanFor(slowGet).action === 'verify_route_speed' && (repairPlanFor(slowGet) as any).path === '/api/live/room?lite=1', JSON.stringify(repairPlanFor(slowGet)));
+  const slowPost = recordFailure(L, { source: 'http', text: 'slow', durationMs: 22000, where: '/api/publish', method: 'POST', path: '/api/publish' }, { nowMs: NOW })!.group;
+  check('★ كتابة بطيئة لا تُعاد أبداً ⇒ مهندس الكود', repairPlanFor(slowPost).action === 'developer');
+  const srv = readFileSync(join(process.cwd(), 'server.ts'), 'utf8');
+  check('★ الخادم ينفّذ القياسين ويمرّر الخطة الحية لقائمة المهام', srv.includes('case "verify_backup_speed"') && srv.includes('case "verify_route_speed"') && srv.includes('plan: effectiveRepairPlan(g)'));
 }
 
 console.log('\n' + '='.repeat(60));
