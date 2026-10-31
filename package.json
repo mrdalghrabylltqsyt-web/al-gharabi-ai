@@ -287,6 +287,6 @@
     "esbuild": "^0.28.2",
     "tailwindcss": "^4.1.14",
     "tsx": "^4.23.15",
-    "typescript": "~5.8.2"
+    "typescript": "~7.0.2"
   }
 }
